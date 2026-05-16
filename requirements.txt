@@ -1,0 +1,35 @@
+# ──────────────────────────────────────────────
+# Attention-Aware Study Assistant — Dependencies
+# ──────────────────────────────────────────────
+
+# Core Backend
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+
+# Async HTTP (inter-service communication)
+httpx>=0.27.0
+
+# AI / LLM (pick one or more)
+google-genai>=1.0.0
+# anthropic>=0.28.0          # optional: uncomment if using Anthropic
+# ollama runs locally — no pip package needed (uses HTTP API)
+
+# Prompt Templating
+Jinja2>=3.1.4
+
+# Database
+SQLAlchemy>=2.0.30
+alembic>=1.13.0
+
+# Frontend
+streamlit>=1.35.0
+plotly>=5.22.0
+
+# Testing
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+
+# Utilities
+python-dotenv>=1.0.1
+

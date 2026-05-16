@@ -1,0 +1,389 @@
+
+ATTENTION-AWARE STUDY ASSISTANT
+Agentic Microservices Architecture
+GenAI System Building Challenge — Lab Hackathon
+Architecture & Implementation Specification
+
+7 Microservices	
+5 AI Agents
+4 Dev Phases	
+Cloud Native
+ 
+1. System Overview & Vision
+The Attention-Aware Study Assistant is an agentic, cloud-native NLP system that continuously monitors a learner's cognitive state and adapts the teaching content in real time. Unlike static tutoring tools, this system acts as an intelligent agent that observes, reasons, and adapts — switching between four distinct teaching modes based on measured fatigue.
+
+1.1 Core Concept
+Signal Monitored	Adaptation Made
+Keystroke cadence (typing speed & variance)	Switch to concise / analogy mode
+Response delay (time to answer quiz)	Reduce content length, increase scaffolding
+Quiz performance (dropping accuracy trend)	Drop difficulty, trigger a break suggestion
+Session duration & historical fatigue patterns	Personalise pacing for future sessions
+
+1.2 Four Adaptive Teaching Modes
+Mode	Triggered When	Content Style	Prompt Strategy
+Concise Mode	MODERATE fatigue	Short, bullet-pointed, key-facts-only	Summarise in ≤5 sentences
+Detailed Mode	FRESH state	Full explanation with examples	Comprehensive teaching prompt
+Analogy Mode	TIRED state	Relatable metaphors & stories	Explain like I'm 10 + real-world analogy
+Quiz Mode	EXHAUSTED or interval trigger	Single question, instant feedback	Generate question + evaluate answer
+
+ 
+2. Agentic Architecture — ReAct Loop Design
+The system implements a ReAct-style (Reason + Act) agentic loop through the Orchestrator Agent. Every user interaction triggers a four-step cognitive cycle:
+
+OBSERVE	Collect raw signals: user message, keypress telemetry bundle, session ID.
+REASON	Call Attention Monitor (fatigue score) + Learner Profiler (mastery, history) concurrently. Decide which mode to activate.
+ACT	Dispatch to Content Adaptation Agent or Quiz Engine Agent. Stream response back to learner.
+REFLECT	Update Learner Profile with interaction outcome. Log to Data Persistence Service. Adjust next-call parameters.
+
+2.1 Agent Communication Pattern
+All inter-agent communication flows through the Orchestrator. No agent calls another agent directly. This hub-and-spoke pattern ensures clear separation of concerns, easy debugging, and independent deployability.
+
+Communication flow:
+•	Frontend (Streamlit) → POST /interact → Orchestrator Agent (Port 8000)
+•	Orchestrator → concurrent calls → Attention Monitor (8001) + Learner Profiler (8002)
+•	Orchestrator → mode decision → Content Adapter (8003) OR Quiz Engine (8004)
+•	All agents → read/write → Data Persistence Service (8005)
+•	Content Adapter + Quiz Engine → Anthropic Claude API (external)
+
+ 
+3. Microservices Catalogue
+Seven independent services form the complete system. Each runs on a dedicated port, has a single clear responsibility, and communicates exclusively via HTTP/JSON APIs.
+
+3.0 Services at a Glance
+ID	Service Name	Port	Primary Role	Key Technology
+SVC-01	Attention Monitor Agent	8001	Passive sensor & fatigue classifier	Python · FastAPI · scikit-learn (heuristic rule engine, upgradeable to LSTM)
+SVC-02	Learner Profiler Agent	8002	Session context & adaptive profile manager	Python · FastAPI · SQLite (via SQLAlchemy) · Pydantic models
+SVC-03	Content Adaptation Agent	8003	Dynamic content generator & mode switcher	Python · FastAPI · Anthropic Python SDK · Jinja2 (prompt templating)
+SVC-04	Quiz Engine Agent	8004	Question generator, evaluator & scorer	Python · FastAPI · Anthropic Python SDK · JSON schema enforcement
+SVC-05	Orchestrator Agent	8000	Central coordinator — the brain of the system	Python · FastAPI · httpx (async inter-service calls) · asyncio
+SVC-06	Data Persistence Service	8005	Centralised storage & retrieval layer	Python · FastAPI · SQLAlchemy · SQLite (dev) · Supabase PostgreSQL (prod)
+SVC-07	Frontend — Streamlit App	8501	User-facing interactive interface	Python · Streamlit · Streamlit Components (for JS telemetry) · Plotly (fatigue charts)
+
+ 
+4. Detailed Service Specifications
+Each service is documented with its full specification: role, data contracts, agent responsibilities, and exact implementation details.
+
+SVC-01  ·  Attention Monitor Agent
+Passive sensor & fatigue classifier
+
+Continuously tracks learner behavioral signals — keystroke cadence, response latency, and quiz accuracy trends — to infer a real-time cognitive state score (0–100). Acts as the perception layer of the system.
+
+File	attention_monitor.py
+Port	8001
+API Endpoints	POST /analyze-attention
+Tech Stack	Python · FastAPI · scikit-learn (heuristic rule engine, upgradeable to LSTM)
+
+Inputs / Outputs
+Inputs	Outputs
+•	Keypress timestamps (from frontend JS)
+•	Response delay in milliseconds
+•	Quiz score stream	•	Fatigue score (float 0–1)
+•	Fatigue label: FRESH / MODERATE / TIRED / EXHAUSTED
+•	Confidence percentage
+
+Agent Role in System
+Feeds real-time fatigue signal to the Orchestrator Agent at every interaction event.
+
+Exact Implementation Details
+1.	Receives a JSON payload containing: keypress_intervals (list of ms), response_delay_ms (int), recent_quiz_scores (list of floats 0–1).
+2.	Applies a weighted heuristic: slow keypress variance + high response delay + dropping quiz scores → high fatigue.
+3.	Returns a FatigueState object with score, label, and confidence.
+4.	Stores each event in SQLite via Data Persistence Service for longitudinal trend analysis.
+5.	Exposes /health and /history/{session_id} auxiliary endpoints.
+ 
+
+SVC-02  ·  Learner Profiler Agent
+Session context & adaptive profile manager
+
+Maintains a persistent learner model across sessions. Tracks topic mastery, preferred explanation styles, difficulty progression, and historical fatigue patterns. Acts as the memory layer for all agents.
+
+File	learner_profiler.py
+Port	8002
+API Endpoints	GET /profile/{session_id}  |  POST /profile/update
+Tech Stack	Python · FastAPI · SQLite (via SQLAlchemy) · Pydantic models
+
+Inputs / Outputs
+Inputs	Outputs
+•	Session ID
+•	Topic slug
+•	Quiz results
+•	Mode preferences	•	Learner profile JSON
+•	Recommended difficulty (1–5)
+•	Preferred mode history
+
+Agent Role in System
+Consulted by Orchestrator before generating any content. Updated after every quiz and mode switch.
+
+Exact Implementation Details
+6.	Stores learner records in a learner_profiles SQLite table with columns: session_id, topic, mastery_score, preferred_mode, avg_fatigue, last_seen.
+7.	GET /profile/{session_id} returns a full LearnerProfile Pydantic model.
+8.	POST /profile/update accepts deltas (quiz result, new mode) and applies incremental updates — mastery score uses exponential moving average.
+9.	Calculates recommended difficulty using: base_difficulty + mastery_delta - fatigue_penalty formula.
+10.	Exposes /insights/{session_id} to return a natural-language summary of the learner's progress, generated via a lightweight Claude API call.
+ 
+
+SVC-03  ·  Content Adaptation Agent
+Dynamic content generator & mode switcher
+
+The core AI engine. Receives a topic, fatigue state, and learner profile, then calls the Claude API with a dynamically constructed system prompt to generate content in the appropriate mode: Concise, Detailed, Analogy, or Quiz. This is the most Claude-heavy service.
+
+File	content_adapter.py
+Port	8003
+API Endpoints	POST /generate-content
+Tech Stack	Python · FastAPI · Anthropic Python SDK · Jinja2 (prompt templating)
+
+Inputs / Outputs
+Inputs	Outputs
+•	Topic / question text
+•	Fatigue label
+•	Learner profile
+•	Requested mode (auto or forced)	•	Adaptive content block (Markdown)
+•	Detected mode used
+•	Estimated reading time (seconds)
+
+Agent Role in System
+Primary content generation node. Called by Orchestrator with enriched context. Returns streamed or full Markdown.
+
+Exact Implementation Details
+11.	Maintains a PromptTemplate registry (Jinja2 templates) for each mode: concise.j2, detailed.j2, analogy.j2, quiz.j2.
+12.	Mode auto-selection logic: FRESH → Detailed; MODERATE → Concise; TIRED → Analogy; EXHAUSTED → Quiz (short, one-question).
+13.	Injects learner profile fields (mastery level, topic) into the system prompt for personalised difficulty.
+14.	Calls claude-sonnet-4-20250514 via the Anthropic SDK with streaming enabled; streams tokens to the frontend via Server-Sent Events (SSE).
+15.	Returns metadata: mode_used, estimated_read_seconds, difficulty_level alongside the content.
+ 
+
+SVC-04  ·  Quiz Engine Agent
+Question generator, evaluator & scorer
+
+Generates contextually relevant quiz questions from a topic and evaluates free-text answers using Claude. Provides a score and constructive feedback, which feeds back into the Learner Profiler.
+
+File	quiz_engine.py
+Port	8004
+API Endpoints	POST /generate-quiz  |  POST /evaluate-answer
+Tech Stack	Python · FastAPI · Anthropic Python SDK · JSON schema enforcement
+
+Inputs / Outputs
+Inputs	Outputs
+•	Topic
+•	Difficulty level (1–5)
+•	Learner's free-text answer	•	Quiz question (MCQ or open-ended)
+•	Score (0–1)
+•	Feedback string
+•	Correct answer
+
+Agent Role in System
+Called by Orchestrator in Quiz Mode. Evaluation results forwarded to Learner Profiler to update mastery score.
+
+Exact Implementation Details
+16.	POST /generate-quiz: sends topic + difficulty to Claude with a strict JSON-response system prompt returning {question, options, correct_answer, explanation}.
+17.	POST /evaluate-answer: sends {question, correct_answer, learner_answer} to Claude for semantic evaluation — returns {score, feedback, is_correct}.
+18.	Uses Pydantic to validate Claude's JSON output; retries once if schema validation fails.
+19.	Difficulty 1–2 → MCQ; Difficulty 3–5 → open-ended short answer.
+20.	Score is normalised to 0–1 float and emitted to Learner Profiler via internal HTTP call.
+ 
+
+SVC-05  ·  Orchestrator Agent
+Central coordinator — the brain of the system
+
+The master agentic loop. Receives every user interaction, fans out to specialist agents, aggregates results, decides mode, and returns a unified response. Implements a lightweight ReAct-style reasoning cycle (Observe → Plan → Act → Reflect).
+
+File	orchestrator.py
+Port	8000
+API Endpoints	POST /interact
+Tech Stack	Python · FastAPI · httpx (async inter-service calls) · asyncio
+
+Inputs / Outputs
+Inputs	Outputs
+•	User message / topic query
+•	Session ID
+•	Keypress telemetry bundle	•	Adaptive content or quiz
+•	Active mode
+•	Fatigue state
+•	Session metadata
+
+Agent Role in System
+Entry point for the Streamlit frontend. Coordinates all other agents; no agent calls another agent directly — all routing goes through Orchestrator.
+
+Exact Implementation Details
+21.	On each /interact call: (1) Calls Attention Monitor with telemetry payload; (2) Fetches Learner Profile; (3) Decides mode using fatigue label + profile; (4) Calls Content Adaptation Agent or Quiz Engine depending on mode; (5) Updates Learner Profile with results; (6) Logs interaction to Data Persistence Service.
+22.	Uses asyncio.gather() to call Attention Monitor and Learner Profiler concurrently, reducing latency.
+23.	Implements a fallback chain: if Content Adapter returns an error → falls back to concise mode with a simplified prompt.
+24.	Exposes /session/summary/{session_id} to return a full session recap generated by Claude.
+25.	Maintains conversation history in memory (last 10 turns) for multi-turn context continuity.
+ 
+
+SVC-06  ·  Data Persistence Service
+Centralised storage & retrieval layer
+
+Provides a clean API over SQLite (local) / Supabase (cloud) for all agents. Handles sessions, interaction logs, learner profiles, and quiz records. All agents use this service — none write to disk directly.
+
+File	data_store.py
+Port	8005
+API Endpoints	POST /store  |  GET /query  |  GET /session-history/{id}
+Tech Stack	Python · FastAPI · SQLAlchemy · SQLite (dev) · Supabase PostgreSQL (prod)
+
+Inputs / Outputs
+Inputs	Outputs
+•	Entity type
+•	Session ID
+•	Payload JSON	•	Stored record confirmation
+•	Query results
+
+Agent Role in System
+Passive infrastructure service. Called by Orchestrator, Learner Profiler, and Attention Monitor for all read/write operations.
+
+Exact Implementation Details
+26.	Four SQLite tables: sessions (id, start_time, topic), interactions (session_id, timestamp, mode_used, fatigue_score, content_snippet), learner_profiles (session_id, topic, mastery, preferred_mode), quiz_records (session_id, question, score, feedback).
+27.	SQLAlchemy ORM models with Alembic migrations for schema management.
+28.	GET /session-history/{id} returns a chronological list of all interactions, modes, and fatigue states for a session — used by the Session Summary feature.
+29.	In production (Render.com), swaps SQLite for Supabase via a DATABASE_URL environment variable — SQLAlchemy handles both with the same ORM code.
+30.	Includes a /export/{session_id} endpoint that returns a downloadable JSON file of the full session.
+ 
+
+SVC-07  ·  Frontend — Streamlit App
+User-facing interactive interface
+
+The learner's interface. Built with Streamlit, it captures user input, collects telemetry (via embedded JS), displays adaptive content, runs quizzes interactively, and shows a real-time fatigue dashboard.
+
+File	app.py
+Port	8501
+API Endpoints	Browser UI (no REST endpoint)
+Tech Stack	Python · Streamlit · Streamlit Components (for JS telemetry) · Plotly (fatigue charts)
+
+Inputs / Outputs
+Inputs	Outputs
+•	User topic / question text
+•	Keypress events (JS)
+•	Mode override toggle	•	Rendered Markdown content
+•	Quiz UI
+•	Fatigue gauge
+•	Session summary
+
+Agent Role in System
+Not an agent but the human-in-the-loop interface. Sends all interactions to Orchestrator /interact and renders the response.
+
+Exact Implementation Details
+31.	Captures keystroke timestamps using a custom Streamlit component (HTML + JS) that tracks keydown events on the text input and posts to a hidden state variable.
+32.	Displays a live Plotly gauge chart for the current fatigue score, updated after each interaction.
+33.	Renders streamed content via st.write_stream() connected to the Orchestrator's SSE endpoint.
+34.	Sidebar includes: Session History (chronological list of mode switches), Current Learner Profile stats, and a Manual Mode Override selector.
+35.	Session summary view (end-of-session button) calls /session/summary/{id} and renders a formatted Markdown recap.
+ 
+5. Phase-by-Phase Implementation Plan
+The system is built across four phases matching the hackathon requirements, each adding a new layer of capability while remaining independently demoable.
+
+Phase 0: Idea & Research
+Duration	Day 1 — Morning (2 hrs)
+Phase Goal	Validate the concept, define data flows, and sketch architecture.
+
+Deliverables & Tasks:
+36.	Use Claude to research cognitive load theory, Sweller's CLT, and attention-fatigue patterns in e-learning.
+37.	Define the four teaching modes (Concise, Detailed, Analogy, Quiz) and write sample prompts for each.
+38.	Create a Requirement Specification Document covering user stories, system constraints, and NLP pipeline.
+39.	Sketch the microservices diagram in Excalidraw: 7 boxes, arrows showing data flow, port numbers.
+40.	Decide on tech stack: FastAPI + Streamlit + SQLite + Anthropic SDK.
+
+Phase 1: Terminal-Based Modular System
+Duration	Day 1 — Afternoon to Evening (4–5 hrs)
+Phase Goal	Build every microservice as a standalone Python module callable from terminal. No web servers yet.
+
+Deliverables & Tasks:
+41.	Create project structure: /services/attention_monitor.py, learner_profiler.py, content_adapter.py, quiz_engine.py, orchestrator.py, data_store.py.
+42.	Implement attention_monitor.py: hardcode a FatigueClassifier class with rule-based logic. Test with mock keypress data via python -m services.attention_monitor.
+43.	Implement content_adapter.py: use Anthropic SDK to generate content in all 4 modes. Test each mode individually from CLI.
+44.	Implement quiz_engine.py: generate a question and evaluate a hardcoded answer. Verify JSON output parsing.
+45.	Implement orchestrator.py as a plain Python script that imports and calls all modules in sequence. Run end-to-end: input a topic string, print adaptive content to terminal.
+46.	Implement data_store.py: create SQLite schema and verify read/write with unittest.
+
+Phase 2: FastAPI Services + Streamlit Frontend
+Duration	Day 2 (6–8 hrs)
+Phase Goal	Wrap each module as a FastAPI microservice. Build Streamlit UI. Connect everything.
+
+Deliverables & Tasks:
+47.	Add FastAPI app instances to each service file. Define Pydantic request/response models. Start each service on its designated port using uvicorn.
+48.	Add async inter-service communication to orchestrator.py using httpx.AsyncClient. Implement asyncio.gather() for concurrent Attention + Profile calls.
+49.	Build app.py in Streamlit: text input, keypress telemetry JS component, content display panel, fatigue gauge (Plotly).
+50.	Wire Streamlit to call POST /interact on Orchestrator. Display streamed Markdown response.
+51.	Add sidebar with: Session History, Learner Profile stats, Manual Mode Override toggle.
+52.	Write 10+ unit tests covering: fatigue classification edge cases, JSON schema validation from Claude API, SQLite CRUD operations.
+
+Phase 3 & 4: Data Layer + Cloud Deployment
+Duration	Day 3 (4–6 hrs)
+Phase Goal	Add persistence features and deploy all services to cloud.
+
+Deliverables & Tasks:
+53.	Add session summary endpoint to Orchestrator: call Claude API with full session history to generate a personalised recap.
+54.	Add /export/{session_id} to Data Store: return downloadable JSON of full session.
+55.	Configure Supabase PostgreSQL as production database. Set DATABASE_URL env var. Test SQLAlchemy compatibility.
+56.	Deploy Streamlit app to Streamlit Cloud: connect GitHub repo, set ANTHROPIC_API_KEY and service URLs as secrets.
+57.	Deploy FastAPI services to Render.com: one Web Service per microservice, each with its own start command (uvicorn services.orchestrator:app --host 0.0.0.0 --port 8000).
+58.	Update Streamlit app to point to Render.com URLs for all service calls. End-to-end test on cloud.
+59.	Write README.md with setup guide, architecture diagram link, and GenAI reflection section.
+
+ 
+6. Complete Tech Stack Reference
+
+Layer	Technology	Purpose	Notes
+AI / LLM	Anthropic Claude API (claude-sonnet-4-20250514)	Content generation, quiz evaluation, session summaries	Used in SVC-03, SVC-04, SVC-05
+AI SDK	anthropic Python SDK	Manage API calls, streaming, token limits	pip install anthropic
+Backend Framework	FastAPI	REST API for all 6 backend microservices	Auto-generates OpenAPI docs at /docs
+Async HTTP	httpx (AsyncClient)	Inter-service calls from Orchestrator	Used with asyncio.gather() for concurrency
+ASGI Server	Uvicorn	Runs each FastAPI service	uvicorn service:app --reload
+Data Validation	Pydantic v2	Request/response schema enforcement for all services	Also validates Claude's JSON output
+Prompt Templating	Jinja2	Dynamic system prompt construction in Content Adapter	pip install jinja2
+Database (Dev)	SQLite + SQLAlchemy	Local persistence for profiles, logs, quiz records	Zero-config, file-based
+Database (Prod)	Supabase (PostgreSQL)	Cloud database for deployed version	Same SQLAlchemy ORM code
+DB Migrations	Alembic	SQLite → Supabase schema migrations	alembic upgrade head
+Frontend	Streamlit	Interactive learner UI	pip install streamlit
+Charting	Plotly	Real-time fatigue gauge in Streamlit	st.plotly_chart()
+ML (optional)	scikit-learn	Heuristic fatigue classifier (upgradeable to LSTM)	Rule-engine in Phase 1, ML in bonus
+Cloud Frontend	Streamlit Cloud	Deploy app.py publicly	Free tier, GitHub-connected
+Cloud Backend	Render.com	Deploy FastAPI services as Web Services	Free tier, ENV vars for secrets
+Testing	pytest + pytest-asyncio	Unit tests for all service logic	pytest tests/
+API Testing	Postman / httpie	Manual endpoint testing during development	Collection exported to /tests
+Version Control	GitHub	Mono-repo with all service directories	One repo, multiple service folders
+Documentation	GitHub README + Excalidraw	Architecture diagram + setup guide	Excalidraw link in README
+
+ 
+7. Project Directory Structure
+Recommended monorepo structure for the GitHub submission:
+
+attention-aware-study-assistant/
+├── services/
+│   ├── orchestrator.py        # SVC-05 — entry point, port 8000
+│   ├── attention_monitor.py   # SVC-01 — fatigue detection, port 8001
+│   ├── learner_profiler.py    # SVC-02 — profile management, port 8002
+│   ├── content_adapter.py     # SVC-03 — AI content generation, port 8003
+│   ├── quiz_engine.py         # SVC-04 — quiz gen & eval, port 8004
+│   └── data_store.py          # SVC-06 — persistence layer, port 8005
+├── frontend/
+│   └── app.py                 # SVC-07 — Streamlit UI, port 8501
+├── prompts/
+│   ├── concise.j2             # Jinja2 prompt templates
+│   ├── detailed.j2
+│   ├── analogy.j2
+│   └── quiz.j2
+├── tests/
+│   ├── test_attention.py
+│   ├── test_quiz_engine.py
+│   ├── test_data_store.py
+│   └── test_orchestrator.py
+├── docs/
+│   ├── requirements_spec.md
+│   └── architecture.excalidraw
+├── .env.example
+├── requirements.txt
+└── README.md
+
+8. Hackathon Submission Checklist
+
+Deliverable	What to Include
+☑  GitHub Repo	All 7 service files committed, README complete, architecture diagram linked
+☑  Requirement Spec Doc	User stories, system constraints, NLP pipeline description (docs/requirements_spec.md)
+☑  Unit Tests	pytest suite covering fatigue logic, JSON schema validation, SQLite CRUD, prompt rendering
+☑  Working Demo	Either local (all 7 uvicorn processes + streamlit) or cloud URL (Render + Streamlit Cloud)
+☑  Architecture Diagram	Excalidraw diagram showing all 7 services, ports, data flows, and agent loop
+☑  GenAI Reflection	README section: what worked (prompt generation, boilerplate), what didn't (hallucinated schemas), overall impact
+☑  5-min Walkthrough Notes	Architecture overview, agentic loop explanation, live demo of mode-switching, fatigue gauge
+
+Build with intention. Ship with confidence. Adapt with intelligence.
