@@ -1,0 +1,8 @@
+\beamer@sectionintoc {1}{Problem \& Idea}{3}{0}{1}
+\beamer@sectionintoc {2}{System Overview}{5}{0}{2}
+\beamer@sectionintoc {3}{Microservices}{7}{0}{3}
+\beamer@sectionintoc {4}{GenAI \& Pipelines}{10}{0}{4}
+\beamer@sectionintoc {5}{Fatigue Detection}{14}{0}{5}
+\beamer@sectionintoc {6}{Frontend \& UX}{15}{0}{6}
+\beamer@sectionintoc {7}{Quality \& Deployment}{17}{0}{7}
+\beamer@sectionintoc {8}{Demo \& Takeaways}{19}{0}{8}

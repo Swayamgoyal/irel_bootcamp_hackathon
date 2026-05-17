@@ -1,0 +1,13 @@
+\frametitle{Frontend: Quiz Mode (Telemetry + Feedback)}
+\begin{itemize}
+  \item Prompt-only interaction with live fatigue gauge in sidebar.
+  \item Keypress telemetry captured in-browser and sent with each submission.
+  \item Quiz evaluation returns: score, feedback, correct answer + explanation.
+\end{itemize}
+\vspace{1mm}
+\begin{lstlisting}[language=JavaScript]
+textarea.addEventListener('keydown', () => {
+  timestamps.push(Date.now());
+});
+// intervals -> SVC-01 for fatigue inference
+\end{lstlisting}
